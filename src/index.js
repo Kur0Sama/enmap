@@ -1,6 +1,6 @@
-const level = require('native-level-promise');
+const Level = require('native-level-promise');
 const path = require('path');
-const { inspect } = require('util');
+const fs = require('fs');
 
 /**
  * A enhanced Map structure with additional utility methods.
@@ -33,24 +33,35 @@ class Enmap extends Map {
        */
     Object.defineProperty(this, '_keyArray', { value: null, writable: true, configurable: true });
 
+    /**
+       * Cached indexes 
+       * @name Collection#_indexes
+       * @type {?Object}
+       * @private
+       */
+    Object.defineProperty(this, '_indexes', { value: null, writable: true, configurable: true });
+
     this.defer = new Promise(resolve => this.ready = resolve);
+
+    if (options.indexes) this.indexes = options.indexes;
+
     if (options.persistent) {
       if (!options.name) throw new Error('Must provide a name for the Enmap.');
       this.name = options.name;
-      //todo: check for "unique" option for the DB name and exit if exists
+      // todo: check for "unique" option for the DB name and exit if exists
       this.validateName();
       this.dataDir = (options.dataDir || 'data');
       this.persistent = (options.persistent || false);
       if (!options.dataDir) {
-        const fs = require('fs');
         if (!fs.existsSync('./data')) {
           fs.mkdirSync('./data');
         }
       }
       this.path = path.join(process.cwd(), this.dataDir, this.name);
-      this.db = new level(this.path);
+      this.db = new Level(this.path);
       this.init();
     } else {
+      this.buildIndexes();
       this.ready();
     }
   }
@@ -61,7 +72,7 @@ class Enmap extends Map {
    */
   init() {
     const stream = this.db.keyStream();
-    stream.on('data', key => {
+    stream.on('data', (key) => {
       this.db.get(key, (err, value) => {
         if (err) console.log(err);
         try {
@@ -72,9 +83,78 @@ class Enmap extends Map {
       });
     });
     stream.on('end', () => {
+      this.buildIndexes();
       this.ready();
     });
   }
+
+  /**
+   * 
+   * @param {String} index Required. The index name to add. Generates new
+   * indexes for the specified key.
+   */
+  addIndex(index) {
+    this._indexes[index] = {};
+    for (let i = 0; i < this._entries.length; i++) {
+      if (!this._indexes[index][this._entries[i][1][index]]) {
+        this._indexes[index][this._entries[i][1][index]] = [];
+      }
+      this._indexes[index][this._entries[i][1][index]].push(this._entries[i][0]);
+    }
+  }
+
+  /**
+   * 
+   * @param {String} index Required. Removes all traces of the index in memory.
+   * Note that if the index name is present in {Options}, it will be regenerated
+   * when Enmap is re-initialized.
+   */
+  removeIndex(index) {
+    delete this._indexes[index];
+    delete this.indexes[index];
+  }
+
+  /**
+   * Generates all indexes from the {Options.indexes} array.
+   */
+  buildIndexes() {
+    this._entries = Array.from(this.entries());
+    if (!this.indexes) return;
+
+    for (let i = 0; i < this.indexes.length; i++) {
+      this.addIndex(this.indexes[i]);
+    }
+  }
+
+  /**
+   * 
+   * @param {String} key Required. The Enmap key to be added to
+   * the index. Called when this.set() is used.
+   * @param {*} value The value from which the index is pulled.
+   */
+  addToIndex(key, value) {
+    if (this._keyArray.indexOf(key) < 0) {
+      this._keyArray.push(key);
+    }
+    for (let i = 0; i < this.indexes.length; i++) {
+      if (this._indexes[i][value[i]].indexOf(key) < 0) {
+        this._indexes[i][value[i]].push(key);
+      }
+    }
+  }
+
+  /**
+   * 
+   * @param {*} key Required. The Enmap key to be removed from the index.
+   * @param {*} value The value from which the index is pulled.
+   */
+  delFromIndex(key, value) {
+    for (let i = 0; i < this.indexes.length; i++) {
+      let entry = this._indexes[i][value[i]];
+      entry = entry.slice(entry.indexOf(key), 1);
+    }
+  }
+
 
   /**
    * Internal method used to validate persistent enmap names (valid Windows filenames);
@@ -100,8 +180,7 @@ class Enmap extends Map {
    * @return {Map} The EnMap object.
    */
   set(key, val, save = true) {
-    this._array = null;
-    this._keyArray = null;
+    this.addToIndex(key, val);
     if (this.persistent && save) {
       if (!key || !['String', 'Number'].includes(key.constructor.name)) {
         throw new Error('Enmap require keys to be strings or numbers.');
@@ -121,10 +200,10 @@ class Enmap extends Map {
    * @return {Map} The EnMap object.
    */
   async setAsync(key, val, save = true) {
-    this._array = null;
-    this._keyArray = null;
-    if (!key || !['String', 'Number'].includes(key.constructor.name))
+    this.addToIndex(key, val);
+    if (!key || !['String', 'Number'].includes(key.constructor.name)) {
       throw new Error('Enmap require keys to be strings or numbers.');
+    }
     const insert = typeof val === 'object' ? JSON.stringify(val) : val;
     if (save) await this.db.put(key, insert);
     return super.set(key, val);
@@ -136,8 +215,7 @@ class Enmap extends Map {
    * @param {boolean} bulk Internal property used by the purge method.  
    */
   delete(key, bulk = false) {
-    this._array = null;
-    this._keyArray = null;
+    this.deleteFromIndex(key, this.get(key));
     if (!bulk && this.persistent) {
       this.db.del(key);
     }
@@ -150,8 +228,7 @@ class Enmap extends Map {
    * @param {boolean} bulk Internal property used by the purge method.  
    */
   async deleteAsync(key, bulk = false) {
-    this._array = null;
-    this._keyArray = null;
+    this.deleteFromIndex(key, this.get(key));
     if (!bulk) {
       await this.db.del(key);
     }
@@ -163,8 +240,9 @@ class Enmap extends Map {
    * @return {Promise}
    */
   async purge() {
+    this._indexes = {};
     await this.db.close();
-    return level.destroy(this.path);
+    return Level.destroy(this.path);
   }
 
   /**
@@ -189,70 +267,6 @@ class Enmap extends Map {
   keyArray() {
     if (!this._keyArray || this._keyArray.length !== this.size) this._keyArray = Array.from(this.keys());
     return this._keyArray;
-  }
-
-  /**
-     * Obtains the first value(s) in this Enmap.
-     * @param {number} [count] Number of values to obtain from the beginning
-     * @returns {*|Array<*>} The single value if `count` is undefined, 
-     * or an array of values of `count` length
-     */
-  first(count) {
-    if (count === undefined) return this.values().next().value;
-    if (typeof count !== 'number') throw new TypeError('The count must be a number.');
-    if (!Number.isInteger(count) || count < 1) throw new RangeError('The count must be an integer greater than 0.');
-    count = Math.min(this.size, count);
-    const arr = new Array(count);
-    const iter = this.values();
-    for (let i = 0; i < count; i++) arr[i] = iter.next().value;
-    return arr;
-  }
-
-  /**
-     * Obtains the first key(s) in this Enmap.
-     * @param {number} [count] Number of keys to obtain from the beginning
-     * @returns {*|Array<*>} The single key if `count` is undefined, 
-     * or an array of keys of `count` length
-     */
-  firstKey(count) {
-    if (count === undefined) return this.keys().next().value;
-    if (typeof count !== 'number') throw new TypeError('The count must be a number.');
-    if (!Number.isInteger(count) || count < 1) throw new RangeError('The count must be an integer greater than 0.');
-    count = Math.min(this.size, count);
-    const arr = new Array(count);
-    const iter = this.iter();
-    for (let i = 0; i < count; i++) arr[i] = iter.next().value;
-    return arr;
-  }
-
-  /**
-     * Obtains the last value(s) in this Enmap. This relies on {@link Enmap#array}, 
-     * and thus the caching mechanism applies here as well.
-     * @param {number} [count] Number of values to obtain from the end
-     * @returns {*|Array<*>} The single value if `count` is undefined, 
-     * or an array of values of `count` length
-     */
-  last(count) {
-    const arr = this.array();
-    if (count === undefined) return arr[arr.length - 1];
-    if (typeof count !== 'number') throw new TypeError('The count must be a number.');
-    if (!Number.isInteger(count) || count < 1) throw new RangeError('The count must be an integer greater than 0.');
-    return arr.slice(-count);
-  }
-
-  /**
-     * Obtains the last key(s) in this Enmap. This relies on {@link Enmap#keyArray}, 
-     * and thus the caching mechanism applies here as well.
-     * @param {number} [count] Number of keys to obtain from the end
-     * @returns {*|Array<*>} The single key if `count` is undefined, 
-     * or an array of keys of `count` length
-     */
-  lastKey(count) {
-    const arr = this.keyArray();
-    if (count === undefined) return arr[arr.length - 1];
-    if (typeof count !== 'number') throw new TypeError('The count must be a number.');
-    if (!Number.isInteger(count) || count < 1) throw new RangeError('The count must be an integer greater than 0.');
-    return arr.slice(-count);
   }
 
   /**
@@ -547,18 +561,6 @@ class Enmap extends Map {
       const testVal = enmap.get(key);
       return testVal !== value || (testVal === undefined && !enmap.has(key));
     });
-  }
-
-  /**
-     * The sort() method sorts the elements of a Enmap in place and returns the Enmap.
-     * The sort is not necessarily stable. The default sort order is according to string Unicode code points.
-     * @param {Function} [compareFunction] Specifies a function that defines the sort order.
-     * if omitted, the Enmap is sorted according to each character's Unicode code point value,
-     * according to the string conversion of each element.
-     * @returns {Enmap}
-     */
-  sort(compareFunction = (x, y) => +(x > y) || +(x === y) - 1) {
-    return new Enmap(Array.from(this.entries()).sort((a, b) => compareFunction(a[1], b[1], a[0], b[0])));
   }
 }
 
