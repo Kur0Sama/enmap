@@ -41,17 +41,19 @@ class Enmap extends Map {
        */
     Object.defineProperty(this, '_indexes', { value: null, writable: true, configurable: true });
 
-    this.defer = new Promise(resolve => this.ready = resolve);
+    this.defer = new Promise((resolve) => {
+      this.ready = resolve;
+    });
 
     if (options.indexes) this.indexes = options.indexes;
+    if (options.name) this.persistent = options.persistent || true;
 
-    if (options.persistent) {
+    if (this.persistent) {
       if (!options.name) throw new Error('Must provide a name for the Enmap.');
       this.name = options.name;
       // todo: check for "unique" option for the DB name and exit if exists
       this.validateName();
       this.dataDir = (options.dataDir || 'data');
-      this.persistent = (options.persistent || false);
       if (!options.dataDir) {
         if (!fs.existsSync('./data')) {
           fs.mkdirSync('./data');
@@ -74,7 +76,7 @@ class Enmap extends Map {
     const stream = this.db.keyStream();
     stream.on('data', (key) => {
       this.db.get(key, (err, value) => {
-        if (err) console.log(err);
+        if (err) throw err;
         try {
           this.set(key, JSON.parse(value));
         } catch (e) {
@@ -265,7 +267,9 @@ class Enmap extends Map {
      * @returns {Array}
      */
   keyArray() {
-    if (!this._keyArray || this._keyArray.length !== this.size) this._keyArray = Array.from(this.keys());
+    if (!this._keyArray || this._keyArray.length !== this.size) {
+      this._keyArray = Array.from(this.keys());
+    }
     return this._keyArray;
   }
 
@@ -284,7 +288,9 @@ class Enmap extends Map {
     if (arr.length === 0) return [];
     const rand = new Array(count);
     arr = arr.slice();
-    for (let i = 0; i < count; i++) rand[i] = arr.splice(Math.floor(Math.random() * arr.length), 1)[0];
+    for (let i = 0; i < count; i++) {
+      rand[i] = arr.splice(Math.floor(Math.random() * arr.length), 1)[0];
+    }
     return rand;
   }
 
@@ -303,7 +309,9 @@ class Enmap extends Map {
     if (arr.length === 0) return [];
     const rand = new Array(count);
     arr = arr.slice();
-    for (let i = 0; i < count; i++) rand[i] = arr.splice(Math.floor(Math.random() * arr.length), 1)[0];
+    for (let i = 0; i < count; i++) {
+      rand[i] = arr.splice(Math.floor(Math.random() * arr.length), 1)[0];
+    }
     return rand;
   }
 
@@ -319,22 +327,23 @@ class Enmap extends Map {
   findAll(prop, value) {
     if (typeof prop !== 'string') throw new TypeError('Key must be a string.');
     if (typeof value === 'undefined') throw new Error('Value must be specified.');
-    const results = [];
-    for (const item of this.values()) {
-      if (item[prop] === value) results.push(item);
+    if (this.indexes.includes(prop)) {
+      return this._indexes[prop][value[prop]].map(item => this.get(item));
     }
-    return results;
+    return this.array().filter(item => item[prop] === value);
   }
 
   /**
-     * Searches for a single item where its specified property's value is identical to the given value
-     * (`item[prop] === value`), or the given function returns a truthy value. In the latter case, this is identical to
+     * Searches for a single item where its specified property's 
+     * value is identical to the given value (`item[prop] === value`), 
+     * or the given function returns a truthy value. In the latter case, this is identical to
      * [Array.find()](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/find).
-     * <warn>All Enmap used in Discord.js are mapped using their `id` property, and if you want to find by id you
-     * should use the `get` method. See
+     * <warn>All Enmap used in Discord.js are mapped using their `id` property, 
+     * and if you want to find by id you should use the `get` method. See
      * [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Map/get) for details.</warn>
      * @param {string|Function} propOrFn The property to test against, or the function to test with
-     * @param {*} [value] The expected value - only applicable and required if using a property for the first argument
+     * @param {*} [value] The expected value - only applicable and required 
+     * if using a property for the first argument
      * @returns {*}
      * @example
      * enmap.find('username', 'Bob');
@@ -344,18 +353,17 @@ class Enmap extends Map {
   find(propOrFn, value) {
     if (typeof propOrFn === 'string') {
       if (typeof value === 'undefined') throw new Error('Value must be specified.');
-      for (const item of this.values()) {
-        if (item[propOrFn] === value) return item;
+      if (this.indexes.includes(propOrFn)) {
+        return this._indexes[propOrFn][value[propOrFn]][0];
       }
-      return null;
+      return this.array().find(item => item[propOrFn] === value) || null;
     } else if (typeof propOrFn === 'function') {
       for (const [key, val] of this) {
         if (propOrFn(val, key, this)) return val;
       }
       return null;
-    } else {
-      throw new Error('First argument must be a property string or a function.');
     }
+    throw new Error('First argument must be a property string or a function.');
   }
 
   /* eslint-disable max-len */
@@ -389,8 +397,8 @@ class Enmap extends Map {
   }
 
   /**
-     * Searches for the existence of a single item where its specified property's value is identical to the given value
-     * (`item[prop] === value`).
+     * Searches for the existence of a single item where its specified property's value is identical
+     * to the given value (`item[prop] === value`).
      * <warn>Do not use this to check for an item by its ID. Instead, use `enmap.has(id)`. See
      * [MDN](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Map/has) for details.</warn>
      * @param {string} prop The property to test against
@@ -441,7 +449,8 @@ class Enmap extends Map {
   /**
      * Identical to
      * [Array.map()](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/map).
-     * @param {Function} fn Function that produces an element of the new array, taking three arguments
+     * @param {Function} fn Function that produces an element of the new array, 
+     * taking three arguments
      * @param {*} [thisArg] Value to use as `this` when executing function
      * @returns {Array}
      */
@@ -486,8 +495,8 @@ class Enmap extends Map {
   /**
      * Identical to
      * [Array.reduce()](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/reduce).
-     * @param {Function} fn Function used to reduce, taking four arguments; `accumulator`, `currentValue`, `currentKey`,
-     * and `enmap`
+     * @param {Function} fn Function used to reduce, taking four arguments; `accumulator`, 
+     * `currentValue`, `currentKey`, and `enmap`
      * @param {*} [initialValue] Starting value for the accumulator
      * @returns {*}
      */
